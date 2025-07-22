@@ -1,124 +1,218 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const mongoose = require('mongoose');
+const express = require("express");
 const app = express();
-
-mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log('Connected to MongoDB'))
-  .catch(err => console.error('Failed to connect to MongoDB', err));
+const mongoose = require("mongoose");
+const cors = require("cors");
+require("dotenv").config();
 
 app.use(cors());
-app.use(express.static('public'));
+app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/views/index.html');
+app.use(express.static("public"));
+app.get("/", (req, res) => {
+    res.sendFile(__dirname + "/views/index.html");
 });
 
-const Schema = mongoose.Schema;
-
-const userSchema = new Schema({
-  username: { type: String, required: true },
+// Connect to MongoDB
+mongoose.connect(process.env.MONGO_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
 });
 
-const exerciseSchema = new Schema({
-  userId: { type: Schema.Types.ObjectId, required: true },
-  description: { type: String, required: true },
-  duration: { type: Number, required: true },
-  date: { type: Date, required: true },
+// Connection events
+const db = mongoose.connection;
+db.on("error", console.error.bind(console, "connection error"));
+db.once("open", () => {
+    console.log("Connected to MongoDB");
 });
-
-const User = mongoose.model('User', userSchema);
-const Exercise = mongoose.model('Exercise', exerciseSchema);
-
-app.post('/api/users', async (req, res) => {
-  const { username } = req.body;
-  try {
-    const newUser = new User({ username });
-    await newUser.save();
-    res.json({ username: newUser.username, _id: newUser._id });
-  } catch (error) {
-    res.status(500).json({ error: 'Error creating user' });
-  }
-});
-
-app.get('/api/users', async (req, res) => {
-  try {
-    const users = await User.find({}, 'username _id');
-    res.json(users);
-  } catch (error) {
-    res.status(500).json({ error: 'Error fetching users' });
-  }
-});
-
-app.post('/api/users/:_id/exercises', async (req, res) => {
-  const { _id } = req.params;
-  const { description, duration, date } = req.body;
-  const formattedDate = date ? new Date(date) : new Date();
-
-  try {
-    const user = await User.findById(_id);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const newExercise = new Exercise({
-      userId: _id,
-      description,
-      duration,
-      date: formattedDate,
-    });
-
-    await newExercise.save();
-
-    res.json({
-      username: user.username,
-      description: newExercise.description,
-      duration: newExercise.duration,
-      date: newExercise.date.toDateString(),
-      _id: user._id,
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Error adding exercise' });
-  }
-});
-
-app.get('/api/users/:_id/logs', async (req, res) => {
-  const { _id } = req.params;
-  const { from, to, limit } = req.query;
-
-  let dateFilter = {};
-  if (from) dateFilter['$gte'] = new Date(from);
-  if (to) dateFilter['$lte'] = new Date(to);
-
-  try {
-    const user = await User.findById(_id);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    const filter = { userId: _id };
-    if (from || to) filter.date = dateFilter;
-
-    let query = Exercise.find(filter).select('description duration date');
-    if (limit) query = query.limit(parseInt(limit));
-
-    const exercises = await query.exec();
-
-    res.json({
-      username: user.username,
-      count: exercises.length,
-      _id: user._id,
-      log: exercises.map(ex => ({
-        description: ex.description,
-        duration: ex.duration,
-        date: ex.date.toDateString(),
-      })),
-    });
-  } catch (error) {
-    res.status(500).json({ error: 'Error fetching logs' });
-  }
-});
-
 
 const listener = app.listen(process.env.PORT || 3000, () => {
-  console.log('Your app is listening on port ' + listener.address().port);
+    console.log("Your app is listening on port " + listener.address().port);
+});
+
+// POST /api/users — Create a New User
+const User = require("./models/user");
+
+app.post("/api/users", async (req, res) => {
+    const { username } = req.body;
+
+    if (!username) {
+        return res.status(400).json({ error: "Username is required" });
+    }
+
+    try {
+        // Check if username already exists
+        let existingUser = await User.findOne({ username });
+        if (existingUser) {
+            return res.json({
+                username: existingUser.username,
+                _id: existingUser._id,
+            });
+        }
+
+        // Create new user
+        const newUser = new User({ username });
+        await newUser.save();
+
+        res.json({
+            username: newUser.username,
+            _id: newUser._id,
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server Error" });
+    }
+});
+
+// GET /api/users — Retrieve All Users
+app.get("/api/users", async (req, res) => {
+    try {
+        const users = await User.find({}, "username _id");
+        res.json(users);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server Error" });
+    }
+});
+
+// POST /api/users/:_id/exercises - Add an exercise
+app.post("/api/users/:_id/exercises", async (req, res) => {
+    const { _id } = req.params;
+    const { description, duration, date } = req.body;
+
+    const Exercise = require("./models/exercise");
+
+    // Validate required fields
+    if (!description || !duration) {
+        return res
+            .status(400)
+            .json({ error: "Description and duration are required" });
+    }
+
+    // Validate duration is a number
+    if (isNaN(duration)) {
+        return res.status(400).json({ error: "Duration must be a number" });
+    }
+
+    // Validate and parse date
+    let exerciseDate;
+    if (date) {
+      exerciseDate = new Date(date);
+      if (exerciseDate.toString() === 'Invalid Date') {
+        return res.status(400).json({ error: 'Invalid date format' });
+      }
+    } else {
+      exerciseDate = new Date(); // Current date
+    }
+
+    try {
+        // Find user by _id
+        const user = await User.findById(_id);
+        if (!user) {
+            return res.status(400).json({ error: "User not found" });
+        }
+
+        // Create new exercise
+        const newExercise = new Exercise({
+            userId: user._id,
+            description,
+            duration: Number(duration),
+            date: exerciseDate.toUTCString().split(' ').slice(0, 4).join(' '), // UTC-formatted date
+        });
+
+        await newExercise.save();
+
+        // Respond with the expected structure
+        res.json({
+            username: user.username,
+            description: newExercise.description,
+            duration: newExercise.duration,
+            date: newExercise.date.toDateString(), // Formats the date as "Mon Jan 01 1990"
+            _id: user._id,
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server Error" });
+    }
+});
+
+// GET /api/users/:_id/logs — Retrieve Exercise Logs
+app.get("/api/users/:_id/logs", async (req, res) => {
+    const { _id } = req.params;
+    const { from, to, limit } = req.query;
+
+    const Exercise = require("./models/exercise");
+
+    // Validate _id
+    if (!_id) {
+        return res.status(400).json({ error: "User ID is required" });
+    }
+
+    try {
+        // Find user by _id
+        const user = await User.findById(_id);
+        if (!user) {
+            return res.status(400).json({ error: "User not found" });
+        }
+
+        // Build query
+        let query = { userId: _id };
+        let dateFilter = {};
+
+        if (from) {
+            const fromDate = new Date(from);
+            if (fromDate.toString() === "Invalid Date") {
+                return res
+                    .status(400)
+                    .json({ error: "Invalid from date format" });
+            }
+            dateFilter.$gte = fromDate;
+        }
+
+        if (to) {
+            const toDate = new Date(to);
+            if (toDate.toString() === "Invalid Date") {
+                return res
+                    .status(400)
+                    .json({ error: "Invalid to date format" });
+            }
+            dateFilter.$lte = toDate;
+        }
+
+        if (from || to) {
+            query.date = dateFilter;
+        }
+
+        let exercisesQuery = Exercise.find(query).select(
+            "description duration date"
+        );
+
+        if (limit) {
+            const limitNumber = Number(limit);
+            if (isNaN(limitNumber) || limitNumber < 1) {
+                return res
+                    .status(400)
+                    .json({ error: "Limit must be a positive number" });
+            }
+            exercisesQuery = exercisesQuery.limit(limitNumber);
+        }
+
+        const exercises = await exercisesQuery.exec();
+
+        // Format exercises
+        const log = exercises.map((ex) => ({
+            description: ex.description,
+            duration: ex.duration,
+            date: ex.date.toDateString(),
+        }));
+
+        res.json({
+            username: user.username,
+            count: exercises.length,
+            _id: user._id,
+            log,
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server Error" });
+    }
 });
